@@ -30,7 +30,7 @@ def sign_message(private_key, message):
             mgf=padding.MGF1(hashes.SHA256()),
             salt_length=padding.PSS.MAX_LENGTH
         ),
-        utils.Prehashed(hashes.SHA256())
+        hashes.SHA256() 
     )
 
 def verify_signature(public_key, message, signature):
@@ -59,50 +59,52 @@ def decrypt_message(key, nonce, encrypted_message):
     aesgcm = AESGCM(key)
     return aesgcm.decrypt(nonce, encrypted_message, None)
 
+def create_rsa_key_pair():
+    """Generate an RSA key pair for digital signatures."""
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return private_key, private_key.public_key()
+
+def serialize_public_key(public_key):
+    """Serialize public key to bytes."""
+    return public_key.public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+
 def main():
-    # Load or initialize database (CSV file)
+    # CSV file for database
     csv_filename = 'users.csv'
 
-    # INITIALIZATION (User registration)
-    q = 2**2048  # This should ideally come from an RFC 3526 group, simplified here for brevity
-    alice_password = "AliceStrongPassword"
-    alice_salt = os.urandom(16)  # Generate a unique salt for each user
-    s = convert_string_to_int(alice_password, q)
-    H_P = int_to_element_g(s, q)
+    # Generate key pairs for Alice and Bob
+    alice_private_key, alice_public_key = create_rsa_key_pair()
+    bob_private_key, bob_public_key = create_rsa_key_pair()  # Bob's key pair can be reused for all users.
 
-    # Simulate client side operation
-    alice_private_key = create_dsa_key_pair()
-    alice_public_key = alice_private_key.public_key()
-    r = os.urandom(32)  # Random scalar r
-    C = H_P**int.from_bytes(r, 'big') % q
+    # Alice and Bob sign a message (for simplicity, let's assume the message is their public key)
+    alice_message = serialize_public_key(alice_public_key)
+    bob_message = serialize_public_key(bob_public_key)
+    alice_signature = sign_message(alice_private_key, alice_message)
+    bob_signature = sign_message(bob_private_key, bob_message)
 
-    # Simulate server side operation
-    server_private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    server_public_key = server_private_key.public_key()
-    s_random_scalar = os.urandom(32)  # Server's salt as a random scalar
-    R = C**int.from_bytes(s_random_scalar, 'big') % q
+    # Encrypt M = Alice’s secret key || Bob’s public key
+    alice_secret_key_bytes = alice_private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption()
+    )
+    bob_public_key_bytes = serialize_public_key(bob_public_key)
+    M = alice_secret_key_bytes + bob_public_key_bytes
 
-    # Back to client to compute shared key K
-    z = pow(int.from_bytes(r, 'big'), -1, q)
-    K = R**z % q
+    # Generate a unique salt for AESGCM encryption
+    salt = os.urandom(16)
+    aesgcm = AESGCM(salt)
+    nonce = os.urandom(12)  # AESGCM nonce
+    encrypted_M = aesgcm.encrypt(nonce, M, None)
 
-    # Alice encrypts a message with shared key K (simplified for brevity)
-    shared_secret = HKDF(
-        algorithm=hashes.SHA256(),
-        length=32,
-        salt=None,
-        info=b'handshake data',
-    ).derive(R.to_bytes(256, 'big'))
-
-    encrypted_message = encrypt_message(shared_secret, alice_salt, b"Alice secret key || Bob public key")
-    print("Encrypted message:", encrypted_message)
-
-    # Assuming Alice sends her username, encrypted message and salt to Bob (server), server stores this information
-    with open(csv_filename, 'a', newline='') as csvfile:
-        csvwriter = csv.writer(csvfile)
-        csvwriter.writerow(["Alice", encrypted_message, alice_salt])
-
-    # Bob (server) loads Alice's record from the CSV, could use it later for authentication or other purposes
+    # Bob stores Alice's username, encrypted_M, and salt into the database
+    with open(csv_filename, 'a', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(['Alice', encrypted_M.hex(), salt.hex()])
+    print("Alice's secret key and Bob's public key have been stored in the database.")
 
 if __name__ == "__main__":
     main()
