@@ -72,20 +72,19 @@ def serialize_public_key(public_key):
     )
 
 def main():
-    # CSV file for database
     csv_filename = 'users.csv'
 
-    # Generate key pairs for Alice and Bob
+    # Key pairs for Alice and Bob
     alice_private_key, alice_public_key = create_rsa_key_pair()
-    bob_private_key, bob_public_key = create_rsa_key_pair()  # Bob's key pair can be reused for all users.
+    bob_private_key, bob_public_key = create_rsa_key_pair() 
 
-    # Alice and Bob sign a message (for simplicity, let's assume the message is their public key)
-    alice_message = serialize_public_key(alice_public_key)
-    bob_message = serialize_public_key(bob_public_key)
+    # Alice and Bob sign a message 
+    alice_message = serialize_public_key(alice_public_key) #public key of Alice
+    bob_message = serialize_public_key(bob_public_key) #public key of bob
     alice_signature = sign_message(alice_private_key, alice_message)
     bob_signature = sign_message(bob_private_key, bob_message)
 
-    # Encrypt M = Alice’s secret key || Bob’s public key
+    # Encrypt M : Concatenation of Alice’s secret key Bob’s public key
     alice_secret_key_bytes = alice_private_key.private_bytes(
         encoding=serialization.Encoding.PEM,
         format=serialization.PrivateFormat.PKCS8,
