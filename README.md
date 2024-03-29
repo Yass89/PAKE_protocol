@@ -8,7 +8,7 @@ The implementation is splited into two phases : Registration, and Login
     As shown in the image below, the client initiates the protocol by preparing the password as H(P), where H is a cryptographic hash function and P is the password. The client then generates a random scalar r and computes C = H(P)^r. The value C is sent to the server as the OPRF request.
     Upon receiving C, the server retrieves its secret scalar s and computes R = C^s that will be sent back to the client as the OPRF response.
     The client after receiving R, computes z = r^(-1) and finalizes the OPRF to K = R^z. This results in K being equal to H(P)^s, the client's password hashed and exponentiated with the server's secret without the server ever learning the actual password P, and the client only learns the final output K.
-    
+    ![Alt text](login_phase.png)
 
 # Registration Phase :
     In the registration phase, the client selects a username and password, preparing P as H(P) and initiating the OPRF to generate the shared secret K. Additionally, the client generates a key pair and encrypts the private key along with the server's public key using K.
