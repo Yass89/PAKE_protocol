@@ -1,73 +1,108 @@
 import os
 import csv
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import dh, dsa
+from cryptography.hazmat.primitives.asymmetric import padding, rsa, utils
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives.serialization import load_pem_public_key
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import hashes
 
-# Initialize DH parameters for the 2048-bit group from RFC 3526
-parameters = dh.generate_parameters(generator=2, key_size=2048, backend=default_backend())
+def int_to_element_g(s, q):
+    """Convert integer s to an element in G."""
+    return pow(s, 2, 2*q+1)
 
-# Hash function H that maps an integer to an element of G
-def hash_to_group(element, q):
-    hash_obj = hashes.Hash(hashes.SHA256(), backend=default_backend())
-    hash_obj.update(element.to_bytes((element.bit_length() + 7) // 8, byteorder='big'))
-    hashed = int.from_bytes(hash_obj.finalize(), byteorder='big')
-    return pow(hashed, 2, 2*q + 1)
+def convert_string_to_int(s, q):
+    """Convert a string to an integer in the range [2, q]."""
+    digest = hashes.Hash(hashes.SHA256())
+    digest.update(s.encode())
+    hash_val = int.from_bytes(digest.finalize(), byteorder='big')
+    return 2 + (hash_val % (q - 2))
 
-# Function to generate DSA key pair
-def generate_dsa_keys():
-    private_key = dsa.generate_private_key(key_size=2048, backend=default_backend())
-    public_key = private_key.public_key()
-    return private_key, public_key
+def create_dsa_key_pair():
+    """Generate a DSA key pair."""
+    return rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
-# Function for authenticated encryption
-def encrypt_data(key, plaintext):
+def sign_message(private_key, message):
+    """Sign a message using the private key."""
+    return private_key.sign(
+        message,
+        padding.PSS(
+            mgf=padding.MGF1(hashes.SHA256()),
+            salt_length=padding.PSS.MAX_LENGTH
+        ),
+        utils.Prehashed(hashes.SHA256())
+    )
+
+def verify_signature(public_key, message, signature):
+    """Verify a digital signature."""
+    try:
+        public_key.verify(
+            signature,
+            message,
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.MAX_LENGTH
+            ),
+            utils.Prehashed(hashes.SHA256())
+        )
+        return True
+    except Exception as e:
+        return False
+
+def encrypt_message(key, nonce, message):
+    """Encrypt a message using AESGCM."""
     aesgcm = AESGCM(key)
-    nonce = os.urandom(12)
-    return nonce, aesgcm.encrypt(nonce, plaintext, None)
+    return aesgcm.encrypt(nonce, message, None)
 
-# Function to save data into a CSV file
-def save_data(username, encrypted_message, salt):
-    with open('users.csv', mode='a', newline='') as file:
-        writer = csv.writer(file)
-        writer.writerow([username, encrypted_message.hex(), salt.hex()])
+def decrypt_message(key, nonce, encrypted_message):
+    """Decrypt a message using AESGCM."""
+    aesgcm = AESGCM(key)
+    return aesgcm.decrypt(nonce, encrypted_message, None)
 
-def main(client_password, alice_secret_key, bob_public_key, username):
-    q = parameters.parameter_numbers().q
+def main():
+    # Load or initialize database (CSV file)
+    csv_filename = 'users.csv'
 
-    # Client Side
-    password_int = int.from_bytes(client_password.encode(), 'big')
-    H_p = hash_to_group(password_int, q)
-    r = parameters.parameter_numbers().p  # Random scalar r
-    C = pow(H_p, r, parameters.parameter_numbers().p)
+    # INITIALIZATION (User registration)
+    q = 2**2048  # This should ideally come from an RFC 3526 group, simplified here for brevity
+    alice_password = "AliceStrongPassword"
+    alice_salt = os.urandom(16)  # Generate a unique salt for each user
+    s = convert_string_to_int(alice_password, q)
+    H_P = int_to_element_g(s, q)
 
-    # Server Side
-    salt = os.urandom(16)  # Ensure unique salt for each user
-    s = int.from_bytes(salt, 'big') % q
-    R = pow(C, s, parameters.parameter_numbers().p)
+    # Simulate client side operation
+    alice_private_key = create_dsa_key_pair()
+    alice_public_key = alice_private_key.public_key()
+    r = os.urandom(32)  # Random scalar r
+    C = H_P**int.from_bytes(r, 'big') % q
 
-    # Client Side Continued
-    z = pow(r, -1, q)
-    K = pow(R, z, parameters.parameter_numbers().p)
+    # Simulate server side operation
+    server_private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    server_public_key = server_private_key.public_key()
+    s_random_scalar = os.urandom(32)  # Server's salt as a random scalar
+    R = C**int.from_bytes(s_random_scalar, 'big') % q
 
-    # Alice and Bob generate their DSA key pairs
-    alice_private_key, alice_public_key = generate_dsa_keys()
-    bob_private_key, bob_public_key = generate_dsa_keys()  # Assuming Bob's keys are pre-generated
+    # Back to client to compute shared key K
+    z = pow(int.from_bytes(r, 'big'), -1, q)
+    K = R**z % q
 
-    # Alice encrypts the message with the derived key K
-    nonce, encrypted_message = encrypt_data(K.to_bytes((K.bit_length() + 7) // 8, 'big'), alice_secret_key + bob_public_key.public_bytes(encoding=serialization.Encoding.PEM, format=serialization.PublicFormat.SubjectPublicKeyInfo))
+    # Alice encrypts a message with shared key K (simplified for brevity)
+    shared_secret = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=None,
+        info=b'handshake data',
+    ).derive(R.to_bytes(256, 'big'))
 
-    # Save Alice's username, encrypted message, and salt into the database
-    save_data(username, encrypted_message, salt)
+    encrypted_message = encrypt_message(shared_secret, alice_salt, b"Alice secret key || Bob public key")
+    print("Encrypted message:", encrypted_message)
 
-    print(f"Registration complete for {username}.")
+    # Assuming Alice sends her username, encrypted message and salt to Bob (server), server stores this information
+    with open(csv_filename, 'a', newline='') as csvfile:
+        csvwriter = csv.writer(csvfile)
+        csvwriter.writerow(["Alice", encrypted_message, alice_salt])
+
+    # Bob (server) loads Alice's record from the CSV, could use it later for authentication or other purposes
 
 if __name__ == "__main__":
-    # Example usage
-    client_password = "secure_password"
-    alice_secret_key = b"Alice's secret key"
-    bob_public_key_material = b"Bob's public key"  # Placeholder, should be replaced with actual public key bytes
-    username = "Alice"
-    main(client_password, alice_secret_key, bob_public_key_material, username)
+    main()
