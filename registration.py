@@ -1,109 +1,80 @@
+# registration.py
+
 import os
 import csv
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import padding, rsa, utils
-from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-from cryptography.hazmat.primitives.serialization import load_pem_public_key
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from oprf import OPRF
 from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import dsa
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-def int_to_element_g(s, q):
-    """Convert integer s to an element in G."""
-    return pow(s, 2, 2*q+1)
+class Registration:
+    def __init__(self, oprf):
+        self.oprf = oprf
 
-def convert_string_to_int(s, q):
-    """Convert a string to an integer in the range [2, q]."""
-    digest = hashes.Hash(hashes.SHA256())
-    digest.update(s.encode())
-    hash_val = int.from_bytes(digest.finalize(), byteorder='big')
-    return 2 + (hash_val % (q - 2))
+    def register(self, username, password):
+        # Generate the OPRF key (salt) for the user
+        oprf_key = self.oprf.generate_oprf_key()
+        
+        # Hash the password
+        hashed_password = self.oprf.H(password)
 
-def create_dsa_key_pair():
-    """Generate a DSA key pair."""
-    return rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        # Simulate OPRF and derive a symmetric key for AES-GCM
+        oprf_key = self.oprf.generate_oprf_key()
+        hashed_password = self.oprf.H(password)  # Hash the password
+        oprf_result = self.oprf.perform_oprf(oprf_key, hashed_password)  # Perform OPRF
 
-def sign_message(private_key, message):
-    """Sign a message using the private key."""
-    return private_key.sign(
-        message,
-        padding.PSS(
-            mgf=padding.MGF1(hashes.SHA256()),
-            salt_length=padding.PSS.MAX_LENGTH
-        ),
-        hashes.SHA256() 
-    )
+        # Generate DSA key pair for Alice
+        alice_private_key = dsa.generate_private_key(key_size=2048)
+        alice_public_key = alice_private_key.public_key()
 
-def verify_signature(public_key, message, signature):
-    """Verify a digital signature."""
-    try:
-        public_key.verify(
-            signature,
-            message,
-            padding.PSS(
-                mgf=padding.MGF1(hashes.SHA256()),
-                salt_length=padding.PSS.MAX_LENGTH
-            ),
-            utils.Prehashed(hashes.SHA256())
+        # Serialize Alice's public key
+        alice_public_key_serialized = alice_public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
         )
-        return True
-    except Exception as e:
-        return False
+        
+        # Generate DSA key pair for Bob (server)
+        bob_private_key = dsa.generate_private_key(key_size=2048)
+        bob_public_key = bob_private_key.public_key()
 
-def encrypt_message(key, nonce, message):
-    """Encrypt a message using AESGCM."""
-    aesgcm = AESGCM(key)
-    return aesgcm.encrypt(nonce, message, None)
+        # Serialize Bob's public key
+        bob_public_key_serialized = bob_public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        )
 
-def decrypt_message(key, nonce, encrypted_message):
-    """Decrypt a message using AESGCM."""
-    aesgcm = AESGCM(key)
-    return aesgcm.decrypt(nonce, encrypted_message, None)
+        # Encrypt the message M using AES-GCM
+        aesgcm = AESGCM(oprf_result)
+        nonce = os.urandom(12)  # AES-GCM nonce
+        encrypted_message = aesgcm.encrypt(
+            nonce, 
+            alice_private_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption()
+            ) + bob_public_key_serialized, 
+            None
+        )
+        encrypted_envelope = nonce + encrypted_message
 
-def create_rsa_key_pair():
-    """Generate an RSA key pair for digital signatures."""
-    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    return private_key, private_key.public_key()
+        # Store the user's registration data
+        self.store_user_data(username, encrypted_envelope, oprf_key, alice_public_key_serialized)
 
-def serialize_public_key(public_key):
-    """Serialize public key to bytes."""
-    return public_key.public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo
-    )
+        print(f"User {username} registered successfully.")
 
-def main():
-    csv_filename = 'users.csv'
+    def store_user_data(self, username, encrypted_envelope, oprf_key, alice_public_key_serialized):
+        # Check if CSV file exists; create with header if not
+        users_file = 'users.csv'
+        file_exists = os.path.isfile(users_file)
+        
+        with open(users_file, mode='a', newline='') as file:
+            writer = csv.writer(file)
+            if not file_exists:
+                writer.writerow(["username", "encrypted_envelope", "oprf_key", "alice_public_key"])
+            writer.writerow([username, encrypted_envelope.hex(), oprf_key.hex(), alice_public_key_serialized.decode('utf-8')])
 
-    # Key pairs for Alice and Bob
-    alice_private_key, alice_public_key = create_rsa_key_pair()
-    bob_private_key, bob_public_key = create_rsa_key_pair() 
-
-    # Alice and Bob sign a message 
-    alice_message = serialize_public_key(alice_public_key) #public key of Alice
-    bob_message = serialize_public_key(bob_public_key) #public key of bob
-    alice_signature = sign_message(alice_private_key, alice_message)
-    bob_signature = sign_message(bob_private_key, bob_message)
-
-    # Encrypt M : Concatenation of Alice’s secret key Bob’s public key
-    alice_secret_key_bytes = alice_private_key.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption()
-    )
-    bob_public_key_bytes = serialize_public_key(bob_public_key)
-    M = alice_secret_key_bytes + bob_public_key_bytes
-
-    # Generate a unique salt for AESGCM encryption
-    salt = os.urandom(16)
-    aesgcm = AESGCM(salt)
-    nonce = os.urandom(12)  # AESGCM nonce
-    encrypted_M = aesgcm.encrypt(nonce, M, None)
-
-    # Bob stores Alice's username, encrypted_M, and salt into the database
-    with open(csv_filename, 'a', newline='') as file:
-        writer = csv.writer(file)
-        writer.writerow(['Alice', encrypted_M.hex(), salt.hex()])
-    print("Alice's secret key and Bob's public key have been stored in the database.")
-
-if __name__ == "__main__":
-    main()
+# Example usage
+oprf_instance = OPRF()
+registration = Registration(oprf_instance)
+registration.register("Alice", "password123")
