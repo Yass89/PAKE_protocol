@@ -1,4 +1,4 @@
-This project is done by : **Nour El Houda GALAI**, **Shaina MUMBUKU BAKILI** et **Yassine BAKRIM** , **CCC1**.
+This project is done by : **Nour El Houda GALAI**, **Shaina MUMBUKU BAKILI** et **Yassine BAKRIM** , _**CCC1**_.
 
 It implements an Oblivious Pseudo-Random Function (OPRF) protocol to securely perform password-based authentication without exposing the password or derived keys to the opposing party as a plaintext.
 The implementation is splited into two phases : Registration, and Login 
